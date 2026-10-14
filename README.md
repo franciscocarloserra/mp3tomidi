@@ -68,3 +68,7 @@ The [live demo](https://franciscocarloserra.github.io/mp3tomidi/) replays one ca
 7.1. The Transcriber outputs no velocity. All notes are played at the same level of enthusiasm.
 
 7.2. The synthesizer is not a soundfont and makes no representations to the contrary.
+
+## 8. License
+
+[IDGAF Public License](LICENSE). Clause 1 is binding.
