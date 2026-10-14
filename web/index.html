@@ -1,0 +1,284 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MuScriptor</title>
+<style>
+  :root { --bg:#111; --fg:#ddd; --dim:#777; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; display:flex; flex-direction:column; height:100vh; }
+  h1 { font-size:16px; font-weight:600; margin:10px 14px; }
+  #bar { display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:6px 14px 6px 0; }
+  #ch1 { margin-left:24px; background:#222; color:var(--fg); border:1px solid #333; border-radius:4px; padding:3px 6px; font:inherit; }
+  #ch1:empty { display:none; }
+  #bar button, #bar a { background:#222; color:var(--fg); border:1px solid #333; border-radius:4px; padding:3px 9px; font:inherit; cursor:pointer; text-decoration:none; }
+  #bar button.off { opacity:.35; }
+  #bar button.ch1 { box-shadow:inset 0 -2px 0 currentColor; font-weight:bold; }
+  #wrap { flex:1; overflow:auto; position:relative; }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  #drop { background:#222; color:var(--fg); border:1px dashed #555; border-radius:4px; padding:3px 12px; font:inherit; cursor:pointer; }
+  #midi, #vox { background:#222; color:var(--dim); border:1px solid #333; border-radius:4px; padding:3px 12px; font:inherit; cursor:pointer; }
+  #midi.on { color:#8f8; border-color:#8f8; }
+  #vox.off { opacity:.5; } #vox[hidden] { display:none; }
+  #drop.hover { border-color:#8af; color:#8af; }
+  canvas { display:block; cursor:pointer; }
+  #head { position:absolute; top:0; left:0; width:1px; background:#fff; pointer-events:none; will-change:transform; }
+  #status { padding:6px 14px; color:var(--dim); border-top:1px solid #222; font-size:12px; }
+</style></head>
+<body>
+<header><h1>MuScriptor</h1><button id="drop">Abrir / soltar</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separa la voz original y la suena encima del MIDI" hidden>split voz</button><button id="midi" title="Mandar el playback a la salida MIDI (click de nuevo cambia de salida)">Piano MIDI</button><select id="ch1" title="track en el canal 1 (el que muestra el teclado)"></select><div id="bar"></div></header>
+<div id="wrap"><canvas id="roll"></canvas><div id="head" hidden></div></div>
+<div id="status">listo</div>
+<script>
+const API = 'http://localhost:6977', DEMO = 'demo/', MIDI_VELOCITY = 80, PX_PER_S = 80, ZOOM_MIN = 10, ZOOM_MAX = 800, ZOOM_STEP = 1.25, MAX_CANVAS_W = 32000, ROW_H = 6, LOOKAHEAD_S = 0.3, NOTE_GAIN = 0.12;
+const PALETTE = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#bcf60c','#fabebe','#008080','#e6beff','#9a6324','#fffac8','#aaffc3'];
+
+const $ = id => document.getElementById(id);
+let pxs = PX_PER_S;  // horizontal zoom, px per second
+const wrap = $('wrap'), drop = $('drop'), cv = $('roll'), ctx = cv.getContext('2d'), bar = $('bar'), status = $('status');
+let notes = [], byIndex = {}, colors = {}, muted = new Set(), dur = 0, midiUrl = null, offset = 0;
+let file0 = null, vox = null, voxOn = false, voxSrc = null;  // original file, its vocals AudioBuffer
+let demo = false;  // no service (GitHub Pages or ?demo): replay demo/ instead
+let abort = null, actx = null, playing = false, t0 = 0, from = 0, nextIdx = 0, sched = null, raf = null;
+
+// ---------- drop + transcribe (SSE over fetch) ----------
+['dragover','dragenter'].forEach(e => document.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('hover'); }));
+document.addEventListener('dragleave', () => drop.classList.remove('hover'));
+document.addEventListener('drop', ev => { ev.preventDefault(); drop.classList.remove('hover'); const f = ev.dataTransfer.files[0]; if (f) transcribe(f); });
+
+drop.onclick = () => $('pick').click();
+$('pick').onchange = ev => { const f = ev.target.files[0]; if (f) transcribe(f); ev.target.value = ''; };
+
+async function transcribe(file) {
+  if (demo) return;
+  abort?.abort(); abort = new AbortController(); const sig = abort.signal;
+  stop(); notes = []; byIndex = {}; colors = {}; muted.clear(); offset = 0; bar.innerHTML = ''; ch1Sel.innerHTML = ''; file0 = file; vox = null; voxOn = false; voxBtn.hidden = true; voxBtn.textContent = 'split voz'; voxBtn.classList.remove('off');
+  dur = 0;
+  status.textContent = `${file.name}: subiendo…`;
+  const fd = new FormData(); fd.append('file', file);
+  const t = performance.now();
+  const res = await fetch(API + '/convert', { method:'POST', body:fd, headers:{'x-client-id':'panel'}, signal:sig }).catch(() => null);
+  if (!res) { if (!sig.aborted) status.textContent = `sin servicio en ${API}`; return; }
+  if (!res.ok) { status.textContent = `error ${res.status}: ${await res.text()}`; return; }
+  const reader = res.body.getReader(), dec = new TextDecoder(); let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read().catch(() => ({ done:true })); if (done || sig.aborted) break;
+    buf += dec.decode(value, { stream:true });
+    let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+      const chunk = buf.slice(0, i); buf = buf.slice(i + 2);
+      for (const line of chunk.split('\n')) if (!sig.aborted && line.startsWith('data: ')) onEvent(JSON.parse(line.slice(6)), file.name, t);
+    }
+  }
+}
+
+function onEvent(ev, name, t) {
+  if (ev.type === 'start') {
+    const n = { pitch:ev.pitch, start:ev.start_time, end:ev.start_time + 0.1, inst:ev.instrument };
+    byIndex[ev.index] = n; notes.push(n); addInst(n.inst); dur = Math.max(dur, n.end); redraw();
+  } else if (ev.type === 'end') {
+    const n = byIndex[ev.start_event_index]; if (n) { n.end = ev.end_time; dur = Math.max(dur, n.end); redraw(); }
+  } else if (ev.type === 'progress') {
+    status.textContent = `${name}: ${ev.completed}/${ev.total} bloques · ${notes.length} notas`;
+  } else if (ev.type === 'transcription_complete') {
+    offset = ev.beat_grid?.onset_delay || 0;
+    notes.forEach(n => { n.start = Math.max(0, n.start - offset); n.end = Math.max(n.start + 0.02, n.end - offset); });
+    notes.sort((a, b) => a.start - b.start);
+    const bytes = Uint8Array.from(atob(ev.data), c => c.charCodeAt(0));
+    midiUrl = URL.createObjectURL(new Blob([bytes], { type:'audio/midi' }));
+    const a = document.createElement('a'); a.href = midiUrl; a.download = name.replace(/\.[^.]+$/, '') + '.mid'; a.textContent = 'MIDI ↓'; bar.appendChild(a); voxBtn.hidden = false;
+    const bpm = ev.beat_grid?.bpm ? ` · ${Math.round(ev.beat_grid.bpm)} bpm` : '';
+    status.textContent = `${name}: ${notes.length} notas · ${Object.keys(colors).length} instrumentos${bpm} · ${((performance.now() - t) / 1000).toFixed(1)} s · click en el roll = play/stop`;
+    draw();
+  }
+}
+
+// ---------- stems = instrument toggles ----------
+function addInst(inst) {
+  if (colors[inst]) return;
+  colors[inst] = PALETTE[Object.keys(colors).length % PALETTE.length];
+  const b = document.createElement('button'); b.textContent = inst.replace(/_/g, ' '); b.style.borderColor = colors[inst]; b.style.color = colors[inst];
+  b.dataset.inst = inst; b.title = 'click: on/off · doble click: solo · click derecho: canal 1 del teclado';
+  b.onclick = () => { muted.has(inst) ? muted.delete(inst) : muted.add(inst); refresh(); };
+  b.ondblclick = () => {  // solo; double-clicking the soloed one brings everything back
+    const solo = Object.keys(colors).every(k => k === inst || muted.has(k)) && !muted.has(inst);
+    muted.clear(); if (!solo) for (const k in colors) if (k !== inst) muted.add(k);
+    refresh(); status.textContent = solo ? 'todos' : `solo ${inst.replace(/_/g, ' ')}`;
+  };
+  b.oncontextmenu = e => { e.preventDefault(); setPrimary(inst); };
+  bar.appendChild(b);
+  if (inst !== 'drums') ch1Sel.add(new Option('canal 1: ' + inst.replace(/_/g, ' '), inst));
+  refresh();
+}
+const ch1Sel = $('ch1');
+ch1Sel.onchange = () => setPrimary(ch1Sel.value);
+function setPrimary(inst) {
+  primary = inst; refresh(); status.textContent = `canal 1 → ${inst.replace(/_/g, ' ')}`;
+  if (playing) { from = now(); stop(); play(from); }
+}
+function refresh() {
+  const lead = primary in colors ? primary : 'voice';
+  if (lead in colors) ch1Sel.value = lead;
+  for (const b of bar.querySelectorAll('button[data-inst]')) {
+    b.classList.toggle('off', muted.has(b.dataset.inst)); b.classList.toggle('ch1', b.dataset.inst === lead);
+  }
+  redraw();
+}
+
+// ---------- piano roll ----------
+function range() {
+  let lo = 127, hi = 0;
+  for (const n of notes) { lo = Math.min(lo, n.pitch); hi = Math.max(hi, n.pitch); }
+  return lo > hi ? [48, 72] : [lo - 1, hi + 1];
+}
+function draw() {
+  const [lo, hi] = range(), rows = hi - lo + 1;
+  const w = Math.max(wrap.clientWidth, Math.ceil(dur * pxs) + 40), h = Math.max(wrap.clientHeight - 4, rows * ROW_H);
+  const rh = h / rows;
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h);
+  for (let p = lo; p <= hi; p++) {
+    const y = (hi - p) * rh;
+    if ([1,3,6,8,10].includes(p % 12)) { ctx.fillStyle = '#161616'; ctx.fillRect(0, y, w, rh); }
+    if (p % 12 === 0) { ctx.fillStyle = '#2a2a2a'; ctx.fillRect(0, y + rh - 1, w, 1); ctx.fillStyle = '#555'; ctx.fillText('C' + (p / 12 - 1), 2, y + rh - 2); }
+  }
+  ctx.fillStyle = '#222'; for (let s = 0; s < dur; s += 5) ctx.fillRect(s * pxs, 0, 1, h);
+  for (const n of notes) {
+    if (muted.has(n.inst)) continue;
+    ctx.fillStyle = colors[n.inst];
+    const drum = n.inst === 'drums';
+    ctx.fillRect(n.start * pxs, (hi - n.pitch) * rh, drum ? 3 : Math.max(2, (n.end - n.start) * pxs), Math.max(1, rh - 1));
+  }
+  head.style.height = h + 'px'; placeHead();
+}
+// the playhead is a div over the canvas: moving it doesn't repaint the (song-wide) roll
+const head = $('head');
+function placeHead() { head.hidden = !(playing || from > 0); head.style.transform = `translateX(${now() * pxs}px)`; }
+let drawQueued = false;  // coalesce redraws while notes stream in
+function redraw() { if (!drawQueued) { drawQueued = true; requestAnimationFrame(() => { drawQueued = false; draw(); }); } }
+
+// ---------- playback (WebAudio synth, honors toggles) ----------
+const now = () => playing ? from + actx.currentTime - t0 : from;
+// horizontal zoom: ctrl+wheel / pinch (anchored at the mouse) or + / - keys
+function zoom(f, anchorX = wrap.clientWidth / 2) {
+  const t = (wrap.scrollLeft + anchorX) / pxs;
+  pxs = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, pxs * f));
+  if (dur * pxs > MAX_CANVAS_W) pxs = MAX_CANVAS_W / dur;  // browsers refuse wider canvases
+  draw(); wrap.scrollLeft = t * pxs - anchorX;
+  status.textContent = `zoom ${Math.round(pxs)} px/s`;
+}
+wrap.addEventListener('wheel', ev => { if (ev.ctrlKey) { ev.preventDefault(); zoom(ev.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP, ev.clientX - wrap.getBoundingClientRect().left); } }, { passive:false });
+document.addEventListener('keydown', ev => { if (ev.key === '+' || ev.key === '=') zoom(ZOOM_STEP); else if (ev.key === '-') zoom(1 / ZOOM_STEP); });
+cv.onclick = ev => { if (playing) { from = now(); stop(); placeHead(); } else play(ev.offsetX / pxs); };
+document.addEventListener('keydown', ev => { if (ev.code === 'Space' && notes.length) { ev.preventDefault(); playing ? (from = now(), stop(), placeHead()) : play(from); } });
+
+// ---------- vocals stem (htdemucs on the service) played under the MIDI ----------
+const voxBtn = $('vox');
+voxBtn.onclick = async () => {
+  const b = voxBtn;
+  if (!vox) {
+    const f = file0; b.textContent = 'separando…'; b.disabled = true;
+    const fd = new FormData(); fd.append('file', f);
+    const res = await (demo ? fetch(DEMO + 'vocals.opus') : fetch(API + '/voice', { method:'POST', body:fd })).catch(() => null);
+    if (f !== file0) return;
+    b.disabled = false;
+    if (!res?.ok) { b.textContent = 'split voz'; status.textContent = `split falló: ${res ? await res.text() : 'sin servicio'}`; return; }
+    actx ??= new AudioContext(); vox = await actx.decodeAudioData(await res.arrayBuffer());
+  }
+  voxOn = !voxOn; b.textContent = voxOn ? 'voz real ✓' : 'voz real'; b.classList.toggle('off', !voxOn);
+  if (playing) { from = now(); stop(); play(from); }
+};
+
+function play(at) {
+  actx ??= new AudioContext();
+  const comp = actx.createDynamicsCompressor(); comp.connect(actx.destination); play.out = comp;
+  from = at; t0 = actx.currentTime + 0.05; playing = true;
+  nextIdx = notes.findIndex(n => n.start >= at); if (nextIdx < 0) nextIdx = notes.length;
+  if (midiOut) for (const inst in colors) if (inst !== 'drums') midiOut.send([0xC0 | chanFor(inst), GM_PROGRAM[inst] ?? 0]);
+  if (vox && voxOn) { voxSrc = actx.createBufferSource(); voxSrc.buffer = vox; voxSrc.connect(actx.destination); voxSrc.start(t0, at + offset); }
+  sched = setInterval(tick, 50); tick(); frame();
+}
+function stop() {
+  if (midiOut) for (let ch = 0; ch < 16; ch++) midiOut.send([0xB0 | ch, 123, 0]);
+  voxSrc?.stop(); voxSrc = null;
+  playing = false; sendRobot(); clearInterval(sched); cancelAnimationFrame(raf);
+  if (play.out) { play.out.disconnect(); play.out = null; }
+}
+function tick() {
+  const horizon = now() + LOOKAHEAD_S;
+  while (nextIdx < notes.length && notes[nextIdx].start < horizon) {
+    const n = notes[nextIdx++]; if (!muted.has(n.inst)) voice(n, t0 + n.start - from);
+  }
+  if (nextIdx >= notes.length && now() > dur) { from = 0; stop(); placeHead(); }
+}
+function voice(n, when) {
+  when = Math.max(when, actx.currentTime);
+  if (midiOut) {
+    const ts = performance.now() + (when - actx.currentTime) * 1000, ch = chanFor(n.inst);
+    midiOut.send([0x90 | ch, n.pitch, MIDI_VELOCITY], ts); midiOut.send([0x80 | ch, n.pitch, 0], ts + Math.max(50, (n.end - n.start) * 1000));
+    return;
+  }
+  const g = actx.createGain(); g.connect(play.out);
+  if (n.inst === 'drums') {
+    const len = 0.12, b = actx.createBuffer(1, actx.sampleRate * len, actx.sampleRate), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length) ** 3;
+    const s = actx.createBufferSource(); s.buffer = b;
+    const f = actx.createBiquadFilter(); f.type = n.pitch < 40 ? 'lowpass' : 'highpass'; f.frequency.value = n.pitch < 40 ? 200 : 2000 + (n.pitch - 40) * 100;
+    s.connect(f).connect(g); g.gain.value = NOTE_GAIN * 1.5; s.start(when); return;
+  }
+  const o = actx.createOscillator();
+  o.type = /bass/.test(n.inst) ? 'triangle' : /piano|guitar|harp|chromatic/.test(n.inst) ? 'triangle' : 'sawtooth';
+  o.frequency.value = 440 * 2 ** ((n.pitch - 69) / 12);
+  const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 2500;
+  const len = Math.max(0.05, n.end - n.start), peak = o.type === 'sawtooth' ? NOTE_GAIN * 0.5 : NOTE_GAIN;
+  g.gain.setValueAtTime(0, when); g.gain.linearRampToValueAtTime(peak, when + 0.01);
+  g.gain.setTargetAtTime(peak * 0.5, when + 0.01, 0.3); g.gain.setTargetAtTime(0, when + len, 0.05);
+  o.connect(f).connect(g); o.start(when); o.stop(when + len + 0.3);
+}
+function voxLevel() {  // RMS of the vocals stem around the playhead, relayed to /robot
+  if (!(vox && voxOn && playing)) return 0;
+  const d = vox.getChannelData(0), i = Math.floor((now() + offset) * vox.sampleRate), n = vox.sampleRate * 0.03;
+  let sum = 0; for (let k = i; k < Math.min(i + n, d.length); k++) sum += d[k] * d[k];
+  return Math.sqrt(sum / n);
+}
+let lastRobot = 0;
+function sendRobot() { if (demo) return; lastRobot = performance.now(); fetch(`${API}/robot/level?level=${voxLevel().toFixed(3)}`, { method:'POST' }).catch(() => {}); }
+function frame() {
+  placeHead();
+  if (performance.now() - lastRobot > 33) sendRobot();
+  const x = now() * pxs;
+  if (x < wrap.scrollLeft || x > wrap.scrollLeft + wrap.clientWidth * 0.8) wrap.scrollLeft = x - wrap.clientWidth * 0.2;
+  if (playing) raf = requestAnimationFrame(frame);
+}
+addEventListener('resize', draw);
+
+// demo: a cached /convert stream (demo/events.jsonl) and its vocals stem, so the page works as a static site
+async function loadDemo() {
+  const text = await fetch(DEMO + 'events.jsonl').then(r => r.ok ? r.text() : '').catch(() => '');
+  if (!text) return;
+  demo = true; drop.hidden = true; const t = performance.now();
+  for (const l of text.split('\n')) if (l.trim()) onEvent(JSON.parse(l), 'demo', t);
+}
+if (!['localhost', '127.0.0.1'].includes(location.hostname) || location.search.includes('demo')) loadDemo();
+
+// GM program per instrument group (first program of each MT3_FULL_PLUS group); drums on channel 10
+const GM_PROGRAM = {"acoustic_piano": 0, "electric_piano": 2, "chromatic_percussion": 8, "organ": 16, "acoustic_guitar": 24, "clean_electric_guitar": 26, "distorted_electric_guitar": 29, "acoustic_bass": 32, "electric_bass": 33, "violin": 40, "viola": 41, "cello": 42, "contrabass": 43, "orchestral_harp": 46, "timpani": 47, "string_ensemble": 48, "synth_strings": 50, "voice": 52, "orchestra_hit": 55, "trumpet": 56, "trombone": 57, "tuba": 58, "french_horn": 60, "brass_section": 61, "soprano_and_alto_sax": 64, "tenor_sax": 66, "baritone_sax": 67, "oboe": 68, "english_horn": 69, "bassoon": 70, "clarinet": 71, "flutes": 72, "synth_lead": 80, "synth_pad": 88};
+let primary = null;  // instrument on MIDI channel 1 (the one the keyboard shows); voice by default
+function chanFor(inst) {
+  if (inst === 'drums') return 9;
+  const order = Object.keys(colors).filter(k => k !== 'drums'), lead = primary in colors ? primary : 'voice';
+  if (order.includes(lead)) order.splice(order.indexOf(lead), 1), order.unshift(lead);
+  const i = order.indexOf(inst);
+  return (i < 9 ? i : i + 1) % 16;
+}
+
+// ---------- MIDI out: off → output 1 → output 2 … → off ----------
+let midiOut = null, midiAccess = null;
+$('midi').onclick = async () => {
+  const b = $('midi');
+  try { midiAccess ??= await navigator.requestMIDIAccess(); } catch (e) { status.textContent = 'MIDI no disponible: ' + e.message; return; }
+  const outs = [...midiAccess.outputs.values()].sort((x, y) => /through/i.test(x.name) - /through/i.test(y.name));  // real devices first
+  if (!outs.length) { status.textContent = 'no hay salidas MIDI'; return; }
+  const i = midiOut ? outs.indexOf(midiOut) + 1 : 0;
+  if (midiOut) for (let ch = 0; ch < 16; ch++) midiOut.send([0xB0 | ch, 123, 0]);
+  midiOut = outs[i] || null;
+  b.classList.toggle('on', !!midiOut); b.textContent = midiOut ? midiOut.name.slice(0, 20) : 'Piano MIDI';
+  status.textContent = midiOut ? `MIDI → ${midiOut.name}` : 'MIDI apagado, suena el synth';
+};
+</script>
+</body></html>

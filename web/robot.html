@@ -1,0 +1,91 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><title>robotito</title>
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#000; }
+  #bg { position:fixed; inset:0; }
+  #floor { position:fixed; left:-50%; right:-50%; bottom:-10%; height:60%; transform:perspective(400px) rotateX(70deg);
+    background-image:linear-gradient(var(--c) 2px, transparent 2px), linear-gradient(90deg, var(--c) 2px, transparent 2px);
+    background-size:60px 60px; opacity:.6; }
+  #scene { position:fixed; inset:0; perspective:900px; display:flex; align-items:center; justify-content:center; }
+  .obj, .obj > * { position:absolute; transform-style:preserve-3d; }
+  .face { position:absolute; border:2px solid var(--c); background:rgba(10,10,30,.85); box-shadow:0 0 20px var(--c), inset 0 0 30px var(--c); backface-visibility:visible; }
+  .eye, .mouth, .light { position:absolute; background:var(--c); box-shadow:0 0 30px 6px var(--c); }
+  .eye { border-radius:50%; }
+  .mouth { border-radius:8px; }
+  .spark { position:fixed; width:10px; height:10px; border-radius:50%; background:var(--c); box-shadow:0 0 20px 6px var(--c); transition:transform .7s ease-out, opacity .7s; pointer-events:none; }
+</style></head><body>
+<div id="bg"></div><div id="floor"></div>
+<div id="scene"><div class="obj" id="rob"></div></div>
+<script>
+const GAIN = 6;          // vocals RMS → 0..1
+const SMOOTH = 0.35;     // follow speed
+const SPIN = 0.4;        // idle rotation, rad/s
+const BEAT = 0.25;       // level jump that counts as a hit (flash + hue jump)
+const LOUD = 0.55;       // above this the robot goes wild: arms up, shake, strobe, sparks
+const SPARKS = 10;       // sparks per loud hit
+const S = Math.min(innerWidth, innerHeight) / 9;   // unit size
+const rob = document.getElementById('rob'), bg = document.getElementById('bg'), root = document.documentElement.style;
+let target = 0, level = 0, prev = 0, hue = 180, flash = 0, t = 0, rotY = 0, blink = 0;
+new EventSource('/robot/stream').onmessage = e => target = Math.min(1, +e.data * GAIN);
+
+// box made of 6 faces, centered at (x,y,z); returns its front face to hang features on
+function cube(parent, w, h, d, x, y, z) {
+  const g = document.createElement('div'); g.className = 'obj'; g.style.transform = `translate3d(${x}px,${y}px,${z}px)`;
+  const faces = [[w, h, `translateZ(${d / 2}px)`], [w, h, `rotateY(180deg) translateZ(${d / 2}px)`],
+                 [d, h, `rotateY(90deg) translateZ(${w / 2}px)`], [d, h, `rotateY(-90deg) translateZ(${w / 2}px)`],
+                 [w, d, `rotateX(90deg) translateZ(${h / 2}px)`], [w, d, `rotateX(-90deg) translateZ(${h / 2}px)`]];
+  let front;
+  for (const [fw, fh, tr] of faces) {
+    const f = document.createElement('div'); f.className = 'face';
+    Object.assign(f.style, { width: fw + 'px', height: fh + 'px', left: -fw / 2 + 'px', top: -fh / 2 + 'px', transform: tr });
+    g.appendChild(f); front ??= f;
+  }
+  parent.appendChild(g); return [g, front];
+}
+function part(parent, cls, w, h, x, y) {
+  const e = document.createElement('div'); e.className = cls;
+  Object.assign(e.style, { width: w + 'px', height: h + 'px', left: x + 'px', top: y + 'px' }); parent.appendChild(e); return e;
+}
+const [body] = cube(rob, 3.6 * S, 2.6 * S, 2.4 * S, 0, 2.2 * S, 0);
+const [headG, face] = cube(rob, 4.4 * S, 3.4 * S, 3 * S, 0, -0.9 * S, 0);
+const eyes = [part(face, 'eye', 0.9 * S, 0.9 * S, 0.7 * S, 0.7 * S), part(face, 'eye', 0.9 * S, 0.9 * S, 2.8 * S, 0.7 * S)];
+const mouth = part(face, 'mouth', 2.6 * S, 0.3 * S, 0.9 * S, 2.2 * S);
+cube(headG, 0.2 * S, 1.2 * S, 0.2 * S, 0, -2.3 * S, 0);
+const [bulbG, bulb] = cube(headG, 0.6 * S, 0.6 * S, 0.6 * S, 0, -3.1 * S, 0);
+const arms = [cube(rob, 0.6 * S, 2.4 * S, 0.6 * S, -2.3 * S, 2.2 * S, 0)[0], cube(rob, 0.6 * S, 2.4 * S, 0.6 * S, 2.3 * S, 2.2 * S, 0)[0]];
+
+let wasLoud = false;
+function sparks() {
+  for (let i = 0; i < SPARKS; i++) {
+    const e = document.createElement('div'), a = Math.random() * 7, r = (2 + Math.random() * 3) * S;
+    e.className = 'spark'; e.style.left = innerWidth / 2 + 'px'; e.style.top = innerHeight / 2 - S + 'px'; document.body.appendChild(e);
+    requestAnimationFrame(() => requestAnimationFrame(() => { e.style.transform = `translate(${Math.cos(a) * r}px,${Math.sin(a) * r}px) scale(.2)`; e.style.opacity = 0; }));
+    setTimeout(() => e.remove(), 800);
+  }
+}
+function frame() {
+  t += 1 / 60;
+  level += (target - level) * SMOOTH;
+  const L = Math.max(0, (level - LOUD) / (1 - LOUD));  // 0..1 how far into "loud"
+  if (L > 0.2 && !wasLoud) sparks(); wasLoud = L > 0.1;
+  if (level - prev > BEAT * 0.3 && target > BEAT) { flash = 1; hue = (hue + 60 + Math.random() * 90) % 360; }
+  prev = level; flash *= 0.85; hue = (hue + 0.3 + level * 2) % 360;
+  if (Math.random() < 0.005) blink = 6; blink = Math.max(0, blink - 1);
+  rotY += SPIN / 60 + level * 0.04;
+  const c = `hsl(${hue},100%,${55 + level * 20}%)`; root.setProperty('--c', c);
+  const strobe = L > 0.5 && (t * 12 | 0) % 2;
+  bg.style.background = strobe ? `hsl(${(hue + 180) % 360},100%,60%)`
+    : `radial-gradient(circle at 50% 45%, hsla(${(hue + 180) % 360},100%,${10 + flash * 40 + L * 25}%,1), #000 70%)`;
+  const sx = (Math.random() - 0.5) * L * S * 0.5, sy = (Math.random() - 0.5) * L * S * 0.5;  // shake
+  rob.style.transform = `translate(${sx}px,${sy - Math.abs(Math.sin(t * (6 + L * 6))) * level * S * (1 + L)}px) rotateX(${-12 - L * 18}deg) rotateY(${Math.sin(rotY) * 35}deg) scale(${1 + flash * 0.08 + L * 0.18},${1 + flash * 0.08 + L * 0.25})`;
+  headG.style.transform = `translate3d(0,${-0.9 * S - L * 0.4 * S}px,0) rotateX(${-L * 25}deg) rotateZ(${Math.sin(t * (5 + L * 10)) * (level * 12 + L * 15)}deg)`;
+  const mw = 2.6 + L * 1;
+  Object.assign(mouth.style, { height: (0.15 + level * 1.1 + L * 0.6) * S + 'px', width: mw * S + 'px', left: (2.2 - mw / 2) * S + 'px', background: L > 0.3 ? '#fff' : '' });
+  for (const e of eyes) Object.assign(e.style, { transform: `scale(${blink ? 1 : 1 + L * 0.6},${blink ? 0.1 : 1 + level * 0.3 + L * 0.6}) rotate(${L * t * 400}deg)`,
+                                                  borderRadius: L > 0.3 ? '15%' : '', background: L > 0.3 ? '#fff' : '' });
+  arms.forEach((a, i) => a.style.transform = `translate3d(${(i ? 2.3 : -2.3) * S}px,${2.2 * S - L * S}px,0) rotateZ(${(i ? -1 : 1) * (Math.sin(t * (7 + L * 8) + i) * level * 50 + L * 140)}deg)`);
+  bulb.style.background = level > 0.05 ? '#fff' : '';
+  requestAnimationFrame(frame);
+}
+frame();
+</script></body></html>
