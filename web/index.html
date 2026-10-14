@@ -196,7 +196,7 @@ volMidi.oninput = () => {
 volVox.oninput = () => { if (voxGain) voxGain.gain.value = +volVox.value; };
 
 function play(at) {
-  actx ??= new AudioContext();
+  actx ??= new AudioContext(); actx.resume();  // created before any click when the demo preloads the vocals
   const comp = actx.createDynamicsCompressor(); play.gain = actx.createGain(); play.gain.gain.value = +volMidi.value; comp.connect(play.gain).connect(actx.destination); play.out = comp;
   from = at; t0 = actx.currentTime + 0.05; playing = true;
   nextIdx = notes.findIndex(n => n.start >= at); if (nextIdx < 0) nextIdx = notes.length;
@@ -264,6 +264,7 @@ async function loadDemo() {
   if (!text) return;
   demo = true; drop.hidden = true; const t = performance.now();
   for (const l of text.split('\n')) if (l.trim()) onEvent(JSON.parse(l), 'demo', t);
+  voxBtn.click();  // vocals on by default
 }
 if (!['localhost', '127.0.0.1'].includes(location.hostname) || location.search.includes('demo')) loadDemo();
 
