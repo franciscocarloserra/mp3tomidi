@@ -19,10 +19,11 @@
   #drop.hover { border-color:#8af; color:#8af; }
   canvas { display:block; cursor:pointer; }
   #head { position:absolute; top:0; left:0; width:1px; background:#fff; pointer-events:none; will-change:transform; }
+  #repo { margin-left:auto; margin-right:14px; color:var(--dim); text-decoration:none; }
   #status { padding:6px 14px; color:var(--dim); border-top:1px solid #222; font-size:12px; }
 </style></head>
 <body>
-<header><h1>MuScriptor</h1><button id="drop">Abrir / soltar</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separa la voz original y la suena encima del MIDI" hidden>split voz</button><button id="midi" title="Mandar el playback a la salida MIDI (click de nuevo cambia de salida)">Piano MIDI</button><select id="ch1" title="track en el canal 1 (el que muestra el teclado)"></select><div id="bar"></div></header>
+<header><h1>MuScriptor</h1><button id="drop">Abrir / soltar</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separa la voz original y la suena encima del MIDI" hidden>split voz</button><button id="midi" title="Mandar el playback a la salida MIDI (click de nuevo cambia de salida)">Piano MIDI</button><select id="ch1" title="track en el canal 1 (el que muestra el teclado)"></select><div id="bar"></div><a id="repo" href="https://github.com/franciscocarloserra/mp3tomidi" target="_blank">repo ↗</a></header>
 <div id="wrap"><canvas id="roll"></canvas><div id="head" hidden></div></div>
 <div id="status">listo</div>
 <script>

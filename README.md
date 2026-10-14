@@ -1,43 +1,67 @@
 # mp3tomidi
 
-### Your song goes in. Notes come out. Nobody asked for this.
+**Official Reference Implementation of the Audio-to-Note Reconciliation Protocol (ANRP), Revision 0.0.3-final-FINAL**
 
-You have an mp3. You want a MIDI. Your piano teacher stopped answering your calls years ago. Enter **mp3tomidi**: a web panel that feeds your audio to **two** neural networks, one after the other, until the music surrenders.
+**[Live demo](https://franciscocarloserra.github.io/mp3tomidi/)**. Certified for public listening under Annex Q.
 
-- [MuScriptor](https://github.com/muscriptor/muscriptor) listens to the whole song and writes down every note of every instrument, like a stenographer who did a PhD in vibes.
-- [Demucs htdemucs](https://github.com/facebookresearch/demucs) rips the singer out of the mix, then plays them back over a synth that sounds like a 1997 ringtone with ambition.
+## 1. Scope
 
-**[Live demo](https://franciscocarloserra.github.io/mp3tomidi/)**: no GPU was harmed in the making of this page. It replays one cached transcription of a 100% AI-slop song (no copyright, no shame), with its isolated vocals. Hit "split voz" and enjoy the haunting duet between a real human-ish voice and a sawtooth wave.
+This document specifies a procedure for converting recorded sound into MIDI notes in accordance with no known standard. Conformance is mandatory for implementations that have chosen, of their own free will, to conform.
 
-## The Pipeline™
+The Protocol uses two (2) neural networks, operating in the following order of precedence:
 
-1. You drop a file. The panel throws it at `serve.py` (`POST /convert`).
-2. MuScriptor chews it in 5-second bites and streams every note on/off back over SSE, so you watch the piano roll fill up live, like a very slow, very nerdy fireworks show. Each instrument gets its own color and its own track button.
-3. When it's done it finds the beat (beat_this), snaps a beat grid on top and bakes you a real `.mid` file you can download and show your friends, who will not care.
-4. "split voz" sends the same file to `POST /voice`. `separate.py` fires up htdemucs on the GPU, extracts the vocals and hands them back. The panel lines them up with the MIDI using the onset delay from the beat grid. Karaoke, but backwards.
-5. Playback goes through a WebAudio synth of questionable taste, **or** straight out over Web MIDI to your actual keyboard: one channel and one General MIDI program per instrument, drums on channel 10 like the ancients intended.
+- [MuScriptor](https://github.com/muscriptor/muscriptor) (hereinafter "the Transcriber") listens to the audio and records every note of every instrument.
+- [Demucs htdemucs](https://github.com/facebookresearch/demucs) (hereinafter "the Separator") detaches the vocalist from the mix. The vocalist has not been consulted.
 
-Everything is cached per file in `data/<sha1>.jsonl` (+ `.mid`, `_stems/`). Ask for the same song twice and it answers instantly, smug. Kill it halfway and it picks up from the last finished chunk, holding no grudges.
+## 2. Normative Pipeline
 
-## Summoning ritual
+2.1. The Submitter MUST drop a file onto the panel. The panel SHALL forward it to `serve.py` at `POST /convert`.
+
+2.2. The Transcriber SHALL process the audio in 5-second chunks, which the Committee considers the maximum duration a note may be observed without supervision. Note on/off events SHALL be streamed over SSE so that the piano roll fills in live. Each detected instrument SHALL be assigned one (1) color and one (1) track button.
+
+2.3. On completion, a beat grid SHALL be detected (beat_this) and a `.mid` file SHALL be issued to the Submitter. The `.mid` file has no legal standing.
+
+2.4. On activation of the "split voz" control, the same file SHALL be sent to `POST /voice`. `separate.py` runs the Separator on the GPU and returns the vocals stem, which the panel SHALL align with the MIDI using the beat grid's onset delay, to within a tolerance the Committee declined to define.
+
+2.5. Playback SHALL go through a WebAudio synthesizer of the lowest acceptable fidelity, OR, at the Submitter's discretion, through Web MIDI to a physical keyboard: one channel and one General MIDI program per instrument, with drums on channel 10 as established by precedent and fear.
+
+2.6. Results SHALL be cached per file in `data/<sha1>.jsonl` (plus `.mid` and `_stems/`). A file submitted twice SHALL be answered instantly. An interrupted transcription SHALL resume from its last completed chunk, and SHALL NOT mention the interruption.
+
+## 3. Installation Procedure
 
     python -m venv .venv && .venv/bin/pip install muscriptor
-    pip install demucs          # any python; point DEMUCS_PYTHON at it (default: python3)
-    .venv/bin/python serve.py   # the service awakens on :6977
-    cd web && python3 -m http.server 7808   # the panel, at http://localhost:7808
+    pip install demucs          # any python; designate it via DEMUCS_PYTHON (default: python3)
+    .venv/bin/python serve.py   # service on :6977
+    cd web && python3 -m http.server 7808   # panel at http://localhost:7808
 
-`MUSCRIPTOR_WEIGHTS` picks the brain: `large` (default, downloaded from HuggingFace on first run; accept the license there first) or a local `.safetensors` path. The large model eats ~11 GB of VRAM for breakfast. On an RTX 3090, 15 s of audio takes ~25 s, so yes, it is slower than just listening to the song.
+3.1. `MUSCRIPTOR_WEIGHTS` selects the weights: `large` (default, downloaded from HuggingFace on first run, after the license has been accepted there) or a local `.safetensors` path.
 
-## Controls for the brave
+3.2. The large model requires ~11 GB of VRAM. On an RTX 3090, 15 s of audio takes ~25 s to transcribe. Implementations are reminded that this is slower than listening to the song, and that this is permitted.
 
-- Click the roll: play / stop.
-- Ctrl+wheel or `+` / `-`: zoom in until a single note fills your monitor.
-- Click a track: mute. Double click: solo. Double click again: everyone's back. Right click: that track goes to MIDI channel 1, the one your keyboard lights up.
+## 4. Operator Controls
 
-## The robot
+| Action | Effect |
+|---|---|
+| Click on the roll | Play / stop |
+| Ctrl+wheel, `+`, `-` | Horizontal zoom |
+| Click on a track | Mute |
+| Double click on a track | Solo; a second double click restores the ensemble |
+| Right click on a track | Assigns the track to MIDI channel 1 (the one the keyboard displays) |
 
-Yes, there is a robot. Open `http://<this-ip>:6977/robot` on your phone (same network), put the vocals on, and a neon 3D robot dances to the singer. When it gets loud, it loses its mind: arms up, strobe, sparks. We are not sorry.
+## 5. The Robot
 
-## Known crimes
+5.1. A robot is provided. Its presence is not optional.
 
-MuScriptor gives you notes per instrument but no velocity, so everything plays at the same level of enthusiasm. The synth is a toy, not a soundfont. The demo page can't transcribe new files, because GitHub refused to lend us a GPU.
+5.2. Operators on the same network MAY open `http://<this-ip>:6977/robot` on a mobile device. While the panel plays the vocals stem, the robot SHALL dance in proportion to the vocalist's loudness.
+
+5.3. Above the loudness threshold, the robot SHALL raise its arms, strobe and emit sparks. This behavior is compliant.
+
+## 6. Demonstration Material
+
+The [live demo](https://franciscocarloserra.github.io/mp3tomidi/) replays one cached transcription and its isolated vocals. The source recording is AI-generated slop and is free of copyright, artistic merit and remorse. The demo cannot transcribe new files: no GPU was allocated to the static site, and the appeal was denied.
+
+## 7. Known Deviations
+
+7.1. The Transcriber outputs no velocity. All notes are played at the same level of enthusiasm.
+
+7.2. The synthesizer is not a soundfont and makes no representations to the contrary.
