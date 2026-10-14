@@ -1,8 +1,10 @@
-# mp3tomidi
+# MidiToMp3
 
 **Official Reference Implementation of the Audio-to-Note Reconciliation Protocol (ANRP), Revision 0.0.3-final-FINAL**
 
 **[Live demo](https://franciscocarloserra.github.io/mp3tomidi/)**. Certified for public listening under Annex Q.
+
+![Figure 1. A song, after reconciliation.](screenshot.png)
 
 ## 1. Scope
 
@@ -21,7 +23,7 @@ The Protocol uses two (2) neural networks, operating in the following order of p
 
 2.3. On completion, a beat grid SHALL be detected (beat_this) and a `.mid` file SHALL be issued to the Submitter. The `.mid` file has no legal standing.
 
-2.4. On activation of the "split voz" control, the same file SHALL be sent to `POST /voice`. `separate.py` runs the Separator on the GPU and returns the vocals stem, which the panel SHALL align with the MIDI using the beat grid's onset delay, to within a tolerance the Committee declined to define.
+2.4. On activation of the "split vocals" control, the same file SHALL be sent to `POST /voice`. `separate.py` runs the Separator on the GPU and returns the vocals stem, which the panel SHALL align with the MIDI using the beat grid's onset delay, to within a tolerance the Committee declined to define.
 
 2.5. Playback SHALL go through a WebAudio synthesizer of the lowest acceptable fidelity, OR, at the Submitter's discretion, through Web MIDI to a physical keyboard: one channel and one General MIDI program per instrument, with drums on channel 10 as established by precedent and fear.
 
@@ -46,6 +48,7 @@ The Protocol uses two (2) neural networks, operating in the following order of p
 | Ctrl+wheel, `+`, `-` | Horizontal zoom |
 | Click on a track | Mute |
 | Double click on a track | Solo; a second double click restores the ensemble |
+| `midi` / `vocals` sliders | Volume of the MIDI playback (CC7 on a keyboard) and of the separated vocals |
 | Right click on a track | Assigns the track to MIDI channel 1 (the one the keyboard displays) |
 
 ## 5. The Robot

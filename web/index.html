@@ -1,5 +1,5 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><title>MuScriptor</title>
+<html><head><meta charset="utf-8"><title>MidiToMp3</title>
 <style>
   :root { --bg:#111; --fg:#ddd; --dim:#777; }
   body { margin:0; background:var(--bg); color:var(--fg); font:14px system-ui, sans-serif; display:flex; flex-direction:column; height:100vh; }
@@ -19,13 +19,14 @@
   #drop.hover { border-color:#8af; color:#8af; }
   canvas { display:block; cursor:pointer; }
   #head { position:absolute; top:0; left:0; width:1px; background:#fff; pointer-events:none; will-change:transform; }
+  .vol { color:var(--dim); font-size:12px; display:flex; align-items:center; gap:4px; } .vol[hidden] { display:none; } .vol input { width:70px; accent-color:#888; }
   #repo { margin-left:auto; margin-right:14px; color:var(--dim); text-decoration:none; }
   #status { padding:6px 14px; color:var(--dim); border-top:1px solid #222; font-size:12px; }
 </style></head>
 <body>
-<header><h1>MuScriptor</h1><button id="drop">Abrir / soltar</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separa la voz original y la suena encima del MIDI" hidden>split voz</button><button id="midi" title="Mandar el playback a la salida MIDI (click de nuevo cambia de salida)">Piano MIDI</button><select id="ch1" title="track en el canal 1 (el que muestra el teclado)"></select><div id="bar"></div><a id="repo" href="https://github.com/franciscocarloserra/mp3tomidi" target="_blank">repo ↗</a></header>
+<header><h1>MidiToMp3</h1><button id="drop">Open / drop</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separates the original vocals and plays them over the MIDI" hidden>split vocals</button><label class="vol">midi <input id="volMidi" type="range" min="0" max="2" step="0.05" value="1"></label><label class="vol" id="volVoxL" hidden>vocals <input id="volVox" type="range" min="0" max="2" step="0.05" value="1"></label><button id="midi" title="Send playback to a MIDI output (click again to switch output)">Piano MIDI</button><select id="ch1" title="track on channel 1 (the one the keyboard shows)"></select><div id="bar"></div><a id="repo" href="https://github.com/franciscocarloserra/mp3tomidi" target="_blank">repo ↗</a></header>
 <div id="wrap"><canvas id="roll"></canvas><div id="head" hidden></div></div>
-<div id="status">listo</div>
+<div id="status">ready</div>
 <script>
 const API = 'http://localhost:6977', DEMO = 'demo/', MIDI_VELOCITY = 80, PX_PER_S = 80, ZOOM_MIN = 10, ZOOM_MAX = 800, ZOOM_STEP = 1.25, MAX_CANVAS_W = 32000, ROW_H = 6, LOOKAHEAD_S = 0.3, NOTE_GAIN = 0.12;
 const PALETTE = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#bcf60c','#fabebe','#008080','#e6beff','#9a6324','#fffac8','#aaffc3'];
@@ -34,7 +35,7 @@ const $ = id => document.getElementById(id);
 let pxs = PX_PER_S;  // horizontal zoom, px per second
 const wrap = $('wrap'), drop = $('drop'), cv = $('roll'), ctx = cv.getContext('2d'), bar = $('bar'), status = $('status');
 let notes = [], byIndex = {}, colors = {}, muted = new Set(), dur = 0, midiUrl = null, offset = 0;
-let file0 = null, vox = null, voxOn = false, voxSrc = null;  // original file, its vocals AudioBuffer
+let file0 = null, vox = null, voxOn = false, voxSrc = null, voxGain = null;  // original file, its vocals AudioBuffer
 let demo = false;  // no service (GitHub Pages or ?demo): replay demo/ instead
 let abort = null, actx = null, playing = false, t0 = 0, from = 0, nextIdx = 0, sched = null, raf = null;
 
@@ -49,13 +50,13 @@ $('pick').onchange = ev => { const f = ev.target.files[0]; if (f) transcribe(f);
 async function transcribe(file) {
   if (demo) return;
   abort?.abort(); abort = new AbortController(); const sig = abort.signal;
-  stop(); notes = []; byIndex = {}; colors = {}; muted.clear(); offset = 0; bar.innerHTML = ''; ch1Sel.innerHTML = ''; file0 = file; vox = null; voxOn = false; voxBtn.hidden = true; voxBtn.textContent = 'split voz'; voxBtn.classList.remove('off');
+  stop(); notes = []; byIndex = {}; colors = {}; muted.clear(); offset = 0; bar.innerHTML = ''; ch1Sel.innerHTML = ''; file0 = file; vox = null; voxOn = false; voxBtn.hidden = true; $('volVoxL').hidden = true; voxBtn.textContent = 'split vocals'; voxBtn.classList.remove('off');
   dur = 0;
-  status.textContent = `${file.name}: subiendo…`;
+  status.textContent = `${file.name}: uploading…`;
   const fd = new FormData(); fd.append('file', file);
   const t = performance.now();
   const res = await fetch(API + '/convert', { method:'POST', body:fd, headers:{'x-client-id':'panel'}, signal:sig }).catch(() => null);
-  if (!res) { if (!sig.aborted) status.textContent = `sin servicio en ${API}`; return; }
+  if (!res) { if (!sig.aborted) status.textContent = `no service at ${API}`; return; }
   if (!res.ok) { status.textContent = `error ${res.status}: ${await res.text()}`; return; }
   const reader = res.body.getReader(), dec = new TextDecoder(); let buf = '';
   for (;;) {
@@ -75,7 +76,7 @@ function onEvent(ev, name, t) {
   } else if (ev.type === 'end') {
     const n = byIndex[ev.start_event_index]; if (n) { n.end = ev.end_time; dur = Math.max(dur, n.end); redraw(); }
   } else if (ev.type === 'progress') {
-    status.textContent = `${name}: ${ev.completed}/${ev.total} bloques · ${notes.length} notas`;
+    status.textContent = `${name}: ${ev.completed}/${ev.total} chunks · ${notes.length} notes`;
   } else if (ev.type === 'transcription_complete') {
     offset = ev.beat_grid?.onset_delay || 0;
     notes.forEach(n => { n.start = Math.max(0, n.start - offset); n.end = Math.max(n.start + 0.02, n.end - offset); });
@@ -84,7 +85,7 @@ function onEvent(ev, name, t) {
     midiUrl = URL.createObjectURL(new Blob([bytes], { type:'audio/midi' }));
     const a = document.createElement('a'); a.href = midiUrl; a.download = name.replace(/\.[^.]+$/, '') + '.mid'; a.textContent = 'MIDI ↓'; bar.appendChild(a); voxBtn.hidden = false;
     const bpm = ev.beat_grid?.bpm ? ` · ${Math.round(ev.beat_grid.bpm)} bpm` : '';
-    status.textContent = `${name}: ${notes.length} notas · ${Object.keys(colors).length} instrumentos${bpm} · ${((performance.now() - t) / 1000).toFixed(1)} s · click en el roll = play/stop`;
+    status.textContent = `${name}: ${notes.length} notes · ${Object.keys(colors).length} instruments${bpm} · ${((performance.now() - t) / 1000).toFixed(1)} s · click the roll = play/stop`;
     draw();
   }
 }
@@ -94,22 +95,22 @@ function addInst(inst) {
   if (colors[inst]) return;
   colors[inst] = PALETTE[Object.keys(colors).length % PALETTE.length];
   const b = document.createElement('button'); b.textContent = inst.replace(/_/g, ' '); b.style.borderColor = colors[inst]; b.style.color = colors[inst];
-  b.dataset.inst = inst; b.title = 'click: on/off · doble click: solo · click derecho: canal 1 del teclado';
+  b.dataset.inst = inst; b.title = 'click: on/off · double click: solo · right click: keyboard channel 1';
   b.onclick = () => { muted.has(inst) ? muted.delete(inst) : muted.add(inst); refresh(); };
   b.ondblclick = () => {  // solo; double-clicking the soloed one brings everything back
     const solo = Object.keys(colors).every(k => k === inst || muted.has(k)) && !muted.has(inst);
     muted.clear(); if (!solo) for (const k in colors) if (k !== inst) muted.add(k);
-    refresh(); status.textContent = solo ? 'todos' : `solo ${inst.replace(/_/g, ' ')}`;
+    refresh(); status.textContent = solo ? 'all' : `solo ${inst.replace(/_/g, ' ')}`;
   };
   b.oncontextmenu = e => { e.preventDefault(); setPrimary(inst); };
   bar.appendChild(b);
-  if (inst !== 'drums') ch1Sel.add(new Option('canal 1: ' + inst.replace(/_/g, ' '), inst));
+  if (inst !== 'drums') ch1Sel.add(new Option('channel 1: ' + inst.replace(/_/g, ' '), inst));
   refresh();
 }
 const ch1Sel = $('ch1');
 ch1Sel.onchange = () => setPrimary(ch1Sel.value);
 function setPrimary(inst) {
-  primary = inst; refresh(); status.textContent = `canal 1 → ${inst.replace(/_/g, ' ')}`;
+  primary = inst; refresh(); status.textContent = `channel 1 → ${inst.replace(/_/g, ' ')}`;
   if (playing) { from = now(); stop(); play(from); }
 }
 function refresh() {
@@ -173,25 +174,34 @@ const voxBtn = $('vox');
 voxBtn.onclick = async () => {
   const b = voxBtn;
   if (!vox) {
-    const f = file0; b.textContent = 'separando…'; b.disabled = true;
+    const f = file0; b.textContent = 'separating…'; b.disabled = true;
     const fd = new FormData(); fd.append('file', f);
     const res = await (demo ? fetch(DEMO + 'vocals.opus') : fetch(API + '/voice', { method:'POST', body:fd })).catch(() => null);
     if (f !== file0) return;
     b.disabled = false;
-    if (!res?.ok) { b.textContent = 'split voz'; status.textContent = `split falló: ${res ? await res.text() : 'sin servicio'}`; return; }
+    if (!res?.ok) { b.textContent = 'split vocals'; status.textContent = `split failed: ${res ? await res.text() : 'no service'}`; return; }
     actx ??= new AudioContext(); vox = await actx.decodeAudioData(await res.arrayBuffer());
   }
-  voxOn = !voxOn; b.textContent = voxOn ? 'voz real ✓' : 'voz real'; b.classList.toggle('off', !voxOn);
+  $('volVoxL').hidden = false;
+  voxOn = !voxOn; b.textContent = voxOn ? 'vocals ✓' : 'vocals'; b.classList.toggle('off', !voxOn);
   if (playing) { from = now(); stop(); play(from); }
 };
 
+// volume: synth gain, CC7 on every channel when playing to a MIDI keyboard, vocals gain
+const volMidi = $('volMidi'), volVox = $('volVox');
+volMidi.oninput = () => {
+  if (play.gain) play.gain.gain.value = +volMidi.value;
+  if (midiOut) for (let ch = 0; ch < 16; ch++) midiOut.send([0xB0 | ch, 7, Math.min(127, Math.round(volMidi.value * 100))]);
+};
+volVox.oninput = () => { if (voxGain) voxGain.gain.value = +volVox.value; };
+
 function play(at) {
   actx ??= new AudioContext();
-  const comp = actx.createDynamicsCompressor(); comp.connect(actx.destination); play.out = comp;
+  const comp = actx.createDynamicsCompressor(); play.gain = actx.createGain(); play.gain.gain.value = +volMidi.value; comp.connect(play.gain).connect(actx.destination); play.out = comp;
   from = at; t0 = actx.currentTime + 0.05; playing = true;
   nextIdx = notes.findIndex(n => n.start >= at); if (nextIdx < 0) nextIdx = notes.length;
   if (midiOut) for (const inst in colors) if (inst !== 'drums') midiOut.send([0xC0 | chanFor(inst), GM_PROGRAM[inst] ?? 0]);
-  if (vox && voxOn) { voxSrc = actx.createBufferSource(); voxSrc.buffer = vox; voxSrc.connect(actx.destination); voxSrc.start(t0, at + offset); }
+  if (vox && voxOn) { voxSrc = actx.createBufferSource(); voxSrc.buffer = vox; voxGain = actx.createGain(); voxGain.gain.value = +volVox.value; voxSrc.connect(voxGain).connect(actx.destination); voxSrc.start(t0, at + offset); }
   sched = setInterval(tick, 50); tick(); frame();
 }
 function stop() {
@@ -272,14 +282,14 @@ function chanFor(inst) {
 let midiOut = null, midiAccess = null;
 $('midi').onclick = async () => {
   const b = $('midi');
-  try { midiAccess ??= await navigator.requestMIDIAccess(); } catch (e) { status.textContent = 'MIDI no disponible: ' + e.message; return; }
+  try { midiAccess ??= await navigator.requestMIDIAccess(); } catch (e) { status.textContent = 'MIDI unavailable: ' + e.message; return; }
   const outs = [...midiAccess.outputs.values()].sort((x, y) => /through/i.test(x.name) - /through/i.test(y.name));  // real devices first
-  if (!outs.length) { status.textContent = 'no hay salidas MIDI'; return; }
+  if (!outs.length) { status.textContent = 'no MIDI outputs'; return; }
   const i = midiOut ? outs.indexOf(midiOut) + 1 : 0;
   if (midiOut) for (let ch = 0; ch < 16; ch++) midiOut.send([0xB0 | ch, 123, 0]);
   midiOut = outs[i] || null;
   b.classList.toggle('on', !!midiOut); b.textContent = midiOut ? midiOut.name.slice(0, 20) : 'Piano MIDI';
-  status.textContent = midiOut ? `MIDI → ${midiOut.name}` : 'MIDI apagado, suena el synth';
+  status.textContent = midiOut ? `MIDI → ${midiOut.name}` : 'MIDI off, synth playing';
 };
 </script>
 </body></html>
