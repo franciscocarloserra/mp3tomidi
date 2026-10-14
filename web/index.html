@@ -20,11 +20,11 @@
   canvas { display:block; cursor:pointer; }
   #head { position:absolute; top:0; left:0; width:1px; background:#fff; pointer-events:none; will-change:transform; }
   .vol { color:var(--dim); font-size:12px; display:flex; align-items:center; gap:4px; } .vol[hidden] { display:none; } .vol input { width:70px; accent-color:#888; }
-  #repo { margin-left:auto; margin-right:14px; color:var(--dim); text-decoration:none; }
+  #repo { color:#8af; border:1px solid #8af; border-radius:4px; padding:3px 10px; text-decoration:none; }
   #status { padding:6px 14px; color:var(--dim); border-top:1px solid #222; font-size:12px; }
 </style></head>
 <body>
-<header><h1>MidiToMp3</h1><button id="drop">Open / drop</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separates the original vocals and plays them over the MIDI" hidden>split vocals</button><label class="vol">midi <input id="volMidi" type="range" min="0" max="2" step="0.05" value="1"></label><label class="vol" id="volVoxL" hidden>vocals <input id="volVox" type="range" min="0" max="2" step="0.05" value="1"></label><button id="midi" title="Send playback to a MIDI output (click again to switch output)">Piano MIDI</button><select id="ch1" title="track on channel 1 (the one the keyboard shows)"></select><div id="bar"></div><a id="repo" href="https://github.com/franciscocarloserra/mp3tomidi" target="_blank">repo ↗</a></header>
+<header><h1>MidiToMp3</h1><a id="repo" href="https://github.com/franciscocarloserra/mp3tomidi" target="_blank">GitHub ↗</a><button id="drop">Open / drop</button><input id="pick" type="file" accept="audio/*" hidden><button id="vox" title="separates the original vocals and plays them over the MIDI" hidden>split vocals</button><label class="vol">midi <input id="volMidi" type="range" min="0" max="2" step="0.05" value="1"></label><label class="vol" id="volVoxL" hidden>vocals <input id="volVox" type="range" min="0" max="2" step="0.05" value="1"></label><button id="midi" title="Send playback to a MIDI output (click again to switch output)">Piano MIDI</button><select id="ch1" title="track on channel 1 (the one the keyboard shows)"></select><div id="bar"></div></header>
 <div id="wrap"><canvas id="roll"></canvas><div id="head" hidden></div></div>
 <div id="status">ready</div>
 <script>
