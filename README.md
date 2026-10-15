@@ -61,7 +61,7 @@ The Protocol uses two (2) neural networks, operating in the following order of p
 
 ## 6. Demonstration Material
 
-The [live demo](https://franciscocarloserra.github.io/mp3tomidi/) replays one cached transcription and its isolated vocals. The source recording is AI-generated slop and is free of copyright, artistic merit and remorse. The demo cannot transcribe new files: no GPU was allocated to the static site, and the appeal was denied.
+The [live demo](https://franciscocarloserra.github.io/mp3tomidi/) replays two cached transcriptions and their isolated vocals ("next song" switches). The source recordings are AI-generated slop and are free of copyright, artistic merit and remorse. The demo cannot transcribe new files: no GPU was allocated to the static site, and the appeal was denied.
 
 ## 7. Known Deviations
 
